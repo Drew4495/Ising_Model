@@ -99,6 +99,8 @@ class Ising_Model:
 
     def simulate_ising(self,
                        conn_coeffs,
+                       *,
+                       local_fields=None,
                        num_sim_steps = 500,
                        beta = 1.0,
                        num_iters_per_sim = 1,
@@ -193,7 +195,8 @@ class Ising_Model:
                 units_array = units_array,
                 conn_coeffs = conn_coeffs,
                 beta = beta,
-                current_energy = current_energy
+                current_energy = current_energy,
+                local_fields=local_fields
             )
 
         ### Sampling - store measurements each sim_step
@@ -204,7 +207,8 @@ class Ising_Model:
                     units_array = units_array,
                     conn_coeffs = conn_coeffs,
                     beta = beta,
-                    current_energy = current_energy)
+                    current_energy = current_energy,
+                    local_fields=local_fields)
 
             # Store sim measurement by interval
             for measurement_name, interval in sim_measurements_dict.items():
@@ -214,7 +218,8 @@ class Ising_Model:
                         units_array = units_array,
                         conn_coeffs = conn_coeffs,
                         beta = beta,
-                        current_energy = current_energy
+                        current_energy = current_energy,
+                        local_fields=local_fields
                     )
                     storage_dict[measurement_name].append(measurement_value)
 
@@ -992,14 +997,14 @@ class Ising_Model:
             error_term = ts - expected_spin  # (N, T)
             # Gradient wrt h
             #     grad_h = β * (1/T) * sum_{t=1..T} [ s_i(t) - tanh(...) ]
-            grad_h = beta * np.sum(error_term, axis=1) / T  # shape (N,)
+            grad_h = beta * np.sum(error_term, axis=1) / num_timepoints  # shape (N,)
             # Gradient wrt J
             #     We'll compute a partial first, then symmetrize:
             #         grad_J_part[i,j] = sum over t of [ (s_i - tanh(...)) * s_j ]
             grad_J_from_i = np.dot(error_term, ts.T)  # (N, N)
             # grad_J_from_j = np.dot(time_series, error_term.T)  # shape: (N, N) | = sum(s_j * (s_i - tanh(beta * ef_field)), axis=1)
             # I think I could redo this to be more efficient by using the the fact that grad_J_from_j is just the transpose of grad_J_from_i
-            grad_J = beta * (grad_J_from_i + grad_J_from_j.T) / (2.0 * T)  # (N, N)
+            grad_J = beta * (grad_J_from_i + grad_J_from_j.T) / (2.0 * num_timepoints)  # (N, N)
 
             # --- Subsection: Optionally log intermediate variables ---
             variables_dict = {
@@ -1270,8 +1275,10 @@ class Ising_Model:
                       units_array,
                       conn_coeffs,
                       beta,
+                      *,
                       unit_to_flip=None,
-                      current_energy=None):
+                      current_energy=None,
+                      local_fields=None):
         """
         Flip one unit (at index=unit_to_flip) using Metropolis acceptance.
         Return the possibly-updated unit array and the new energy.
@@ -1284,9 +1291,9 @@ class Ising_Model:
 
         # Calculate energy pre and post unit flip and calculate difference
         if current_energy is None:
-            current_energy = self._calc_energy(units_array, conn_coeffs)
+            current_energy = self._calc_energy(units_array, conn_coeffs, local_fields=local_fields)
         units_array[unit_to_flip] *= -1
-        proposed_energy = self._calc_energy(units_array, conn_coeffs)
+        proposed_energy = self._calc_energy(units_array, conn_coeffs, local_fields=local_fields)
         energy_diff = proposed_energy - current_energy
 
         # Accept or reject spin flip based on Boltzmann probability
@@ -1305,6 +1312,8 @@ class Ising_Model:
                        units_array,
                        conn_coeffs,
                        beta,
+                       *,
+                       local_fields=None,
                        current_energy=None):
         """
         Perform ONE *full sweep* of the spins in random order.
@@ -1323,10 +1332,11 @@ class Ising_Model:
             # Attempt a single unit flip (step)
             units_array, current_energy = self._make_MH_step(
                 units_array,
+                conn_coeffs=conn_coeffs,
                 beta=beta,
                 unit_to_flip=idx,
                 current_energy=current_energy,
-                conn_coeffs=conn_coeffs
+                local_fields=local_fields
             )
 
         return [units_array, current_energy]
@@ -1343,7 +1353,8 @@ class Ising_Model:
                                    units_array = None,
                                    conn_coeffs = None,
                                    current_energy = None,
-                                   beta = None):
+                                   beta = None,
+                                   local_fields = None):
         """
         Helper function to be used for each simulation step. Given a specified measurement_name,
         the appropriate function is called and calculated
@@ -1358,7 +1369,8 @@ class Ising_Model:
             else:
                 return self._calc_energy(
                     units_array=units_array,
-                    conn_coeffs=conn_coeffs)
+                    conn_coeffs=conn_coeffs,
+                    local_fields=local_fields)
 
         elif measurement_name == "magnetization":
             return self._calc_magnetization()
