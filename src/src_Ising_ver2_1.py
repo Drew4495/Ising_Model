@@ -1366,9 +1366,12 @@ class Ising_Model:
         return None
 
 
-    def _calc_energy(self, units_array, conn_coeffs):
-        """I need to double check this is correct. I am worried I am overcounting the spins"""
-        return -0.5 * np.sum(conn_coeffs * np.outer(units_array, units_array))
+    def _calc_energy(self, units_array, conn_coeffs, local_fields=None):
+        # Calculate pairwise energy contribution = -0.5 * sum(J_ij * s_i * s_j) = Jij * S * S^T
+        pair_term = -0.5 * np.sum(conn_coeffs * np.outer(units_array, units_array))
+        # Optional: Calculate local field contribution = - sum(h_i * s_i) = - H^T * S
+        field_term = 0.0 if local_fields is None else -np.dot(local_fields, units_array)
+        return pair_term + field_term
 
 
     def _calc_specific_heat(self):
