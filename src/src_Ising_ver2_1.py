@@ -94,15 +94,15 @@ class Ising_Model:
 
 
     ###################################
-    # Ising simulation  #
+    # Ising forward simulation  #
     ###################################
 
     def simulate_ising(self,
                        conn_coeffs,
                        *,
                        local_fields=None,
-                       num_sim_steps = 500,
                        beta = 1.0,
+                       num_sim_steps=500,
                        num_iters_per_sim = 1,
                        num_burn_in_steps = 0,
                        sim_measurements_dict = None,
@@ -170,6 +170,8 @@ class Ising_Model:
         # -------------------------------------------------------------
         ### Define variables and storage dicts
         params_dict = {
+            "conn_coeffs": conn_coeffs,
+            "local_fields": local_fields,
             "num_sim_steps": num_sim_steps,
             "beta": beta,
             "num_iters_per_sim": num_iters_per_sim,
@@ -179,9 +181,15 @@ class Ising_Model:
         }
 
         num_units = conn_coeffs.shape[0]
+
+        ### Define measurement (per iteration or global) and storage dict (for measurements)
         storage_dict = {
             measurement_name: [] for measurement_name in sim_measurements_dict.keys()
         }
+        iter_measures_dict = {k: v for k,v in sim_measurements_dict.items()
+                     if isinstance(v, numbers.Number)}
+        global_measures_dict = {k: v for k, v in sim_measurements_dict.items()
+                                if v == "global"}
 
         # MCMC simulation
         # -------------------------------------------------------------
@@ -211,9 +219,9 @@ class Ising_Model:
                     local_fields=local_fields)
 
             # Store sim measurement by interval
-            for measurement_name, interval in sim_measurements_dict.items():
+            for measurement_name, interval in iter_measures_dict.items():
                 if (sim_step % interval) == 0:
-                    measurement_value = self._calculate_sim_measurement(
+                    measurement_value = self._calculate_sim_iter_measurement(
                         measurement_name,
                         units_array = units_array,
                         conn_coeffs = conn_coeffs,
@@ -227,9 +235,21 @@ class Ising_Model:
             if verbose_num_sim_steps and (sim_step % 50 == 0):
                 print(f"MH step {sim_step}/{num_sim_steps} completed")
 
-        ### Convert list of arrays to matrices
+        # Convert list of arrays into matrices
+        # -------------------------------------------------------------
         if "units_array" in storage_dict.keys():
             storage_dict["units_array"] = np.array(storage_dict["units_array"]).T
+
+        # Global measurements after the loop
+        # -------------------------------------------------------------
+        for measurement_name, _ in global_measures_dict.items():
+            measurement_value = self._calculate_sim_global_measurement(
+                name = measurement_name,
+                num_units = num_units,
+                storage_dict = storage_dict,
+                beta = beta
+            )
+            storage_dict[measurement_name] = measurement_value
 
         # Build final results dict and return
         # -------------------------------------------------------------
@@ -531,6 +551,7 @@ class Ising_Model:
             If not None, used in convergence checks (optional).
         log_settings_dict : dict or None
             e.g. {"time": 1, "log_settings_dict_objective_function": {"dl_dJ": 10, "J": 50}}
+            ^ I don't think this is correct.
         skip_error_checks : bool
             If True, skip input checks (e.g. for binarization, shape, etc.).
 
@@ -922,7 +943,7 @@ class Ising_Model:
                                             beta,
                                             max_iter,
                                             lr,
-                                            convergence_threshold,
+                                            convergence_threshold=None,
                                             log_settings_dict=None
                                             ):
         """
@@ -1004,7 +1025,7 @@ class Ising_Model:
             grad_J_from_i = np.dot(error_term, ts.T)  # (N, N)
             # grad_J_from_j = np.dot(time_series, error_term.T)  # shape: (N, N) | = sum(s_j * (s_i - tanh(beta * ef_field)), axis=1)
             # I think I could redo this to be more efficient by using the the fact that grad_J_from_j is just the transpose of grad_J_from_i
-            grad_J = beta * (grad_J_from_i + grad_J_from_j.T) / (2.0 * num_timepoints)  # (N, N)
+            grad_J = beta * (grad_J_from_i + grad_J_from_i.T) / (2.0 * num_timepoints)  # (N, N)
 
             # --- Subsection: Optionally log intermediate variables ---
             variables_dict = {
@@ -1348,7 +1369,7 @@ class Ising_Model:
     ###################################
     # Simulation Measurements Functions #
     ###################################
-    def _calculate_sim_measurement(self,
+    def _calculate_sim_iter_measurement(self,
                                    measurement_name,
                                    units_array = None,
                                    conn_coeffs = None,
@@ -1370,15 +1391,62 @@ class Ising_Model:
                 return self._calc_energy(
                     units_array=units_array,
                     conn_coeffs=conn_coeffs,
-                    local_fields=local_fields)
+                    local_fields=local_fields
+                )
 
         elif measurement_name == "magnetization":
-            return self._calc_magnetization()
+            return self._calc_magnetization(units_array=units_array)
 
-        return None
+        raise KeyError(f"Unrecognized measurement name: {measurement_name}. ")
+
+
+    def _calculate_sim_global_measurement(self,
+                                          name,
+                                          num_units,
+                                          *,
+                                          storage_dict=None,
+                                          beta=None):
+
+        if name == "specific_heat":
+            energy_array = storage_dict["energy"]
+            if energy_array is None:
+                raise ValueError("energy_array must be provided for specific heat calculation.")
+            else:
+                return self._calc_specific_heat(
+                    energy_array=energy_array,
+                    beta=beta,
+                    num_units=num_units
+                )
+
+        if name == "magnetic_susceptibility":
+            magnetization_array = storage_dict["magnetization"]
+            if magnetization_array is None:
+                raise ValueError("magnetization_array must be provided for magnetic susceptibility calculation.")
+            else:
+                return self._calc_magnetic_suscpetibility(
+                    magnetization_array= magnetization_array,
+                    beta=beta,
+                    num_units=num_units,
+                    use_absolute_value=True
+                )
+
+        raise KeyError(f"Unrecognized global-measurement name: {name}. ")
 
 
     def _calc_energy(self, units_array, conn_coeffs, local_fields=None):
+        """
+        Calculate the energy of the system given the current state of the units_array.
+        The energy is calculated as:
+        E = -0.5 * sum(J_ij * s_i * s_j) - sum(h_i * s_i)
+        where J_ij is the coupling matrix, s_i is the state of unit i, and h_i is the local field for unit i.
+        The first term is the pairwise interaction energy, and the second term is the local field energy.
+        The factor of -0.5 is included to avoid double counting the pairwise interactions.
+        The local field term is optional and can be set to None if not used.
+        :param units_array: array of shape (N,) representing the current state of the units.
+        :param conn_coeffs: coupling matrix of shape (N, N).
+        :param local_fields: array of shape (N,) representing the local fields for each unit.
+        :return: Returns the total energy of the system. Scalar value.
+        """
         # Calculate pairwise energy contribution = -0.5 * sum(J_ij * s_i * s_j) = Jij * S * S^T
         pair_term = -0.5 * np.sum(conn_coeffs * np.outer(units_array, units_array))
         # Optional: Calculate local field contribution = - sum(h_i * s_i) = - H^T * S
@@ -1386,18 +1454,84 @@ class Ising_Model:
         return pair_term + field_term
 
 
-    def _calc_specific_heat(self):
-        return None
+    def _calc_specific_heat(self, energy_array, beta, num_units):
+        """
+        Calculate the specific heat of the system using the energy array.
+        The specific heat is calculated as:
+        C = (beta^2 / N) * var(E) or  beta^2/N * (E^2 - E^2)
+        where E is the energy array, beta is the inverse temperature, and N is the number of units.
+        :param energy_array: array of shape (T,) representing the energy of the system for each timepoint
+        :param beta: scalar value representing the inverse temperature.
+        :param num_units: scalar value representing the number of units in the system.
+        :return: Returns the specific heat of the system. Scalar value.
+        """
+        energies = np.array(energy_array)
+        return beta**2 / num_units * (energies.var())
 
 
     def _calc_magnetization(self, units_array):
+        """
+        Calculate the magnetization of the system using the units array.
+        :param units_array: array of shape (N,) representing the current state of the units.
+        :return: Returns the magnetization of the system. Scalar value.
+        """
         magnetization = np.mean(units_array)
         return magnetization
 
 
-    def _calc_magnetic_suscpetibility(self):
-        return None
+    def _calc_magnetic_suscpetibility(self, magnetization_array, beta, num_units, use_absolute_value = True):
+        """
+        Calculate the magnetic susceptibility of the system using the magnetization array.
+        The magnetic susceptibility is calculated as:
+        χ = (beta / N) * (‹M^2› - ‹|M|›^2)
+        It was recommended to me to use the absolute value of the magnetization for finite size ising models since M is symmetric around 0
+        where magnetization is the magnetization array, beta is the inverse temperature, and N is the number of units.
+        :param magnetization_array: array of shape (T,) representing the magnetization of the system for eac timepoint
+        :param beta: scalar value representing the inverse temperature.
+        :param num_units: scalar value representing the number of units in the system.
+        :return: Returns the magnetic susceptibility of the system. Scalar value.
+        """
+        magnetizations = np.array(magnetization_array)
+        if use_absolute_value:
+            return beta / num_units * ((magnetizations ** 2).mean() - np.abs(magnetizations).mean() ** 2)
+        else:
+            return beta / num_units * (magnetizations.var())
 
+
+    def _calc_correlation_length(self,
+                                 spin_trajectory,
+                                 *,
+                                 positions=None,
+                                 method="structure"):
+        """
+        STILL WORKING ON THIS.
+        Estimate the correlation length ξ from a list / ndarray of spin states.
+
+        Parameters
+        ----------
+        spin_trajectory : array, shape (n_conf, N)
+            Each row is a configuration of N spins (±1) *after burn-in*.
+        positions : array, shape (N, d), optional
+            Cartesian coordinates of each spin.  Required for `method="structure"`;
+            ignored for `method="real_space"`.
+        method : {"structure", "real_space"}
+            * "structure": 2nd-moment estimator via structure factor S(kmin).
+            * "real_space": fit exp-decay of C(d) = ⟨s_i s_j⟩_{|i-j|=d}.
+
+        Returns
+        -------
+        xi : float
+            Estimated correlation length (same length unit as `positions` grid).
+            :param spin_trajectory:
+            :param positions:
+            :param method:
+            :return:
+        """
+        return "Fxn Not Ready"
+
+
+    ### Other thigns to consider measuring: Binder Cumulant, Energy Binder Cumulant, Magnetization Histogram,
+    ### spin-glass order, entropy estiamte via Wang-Landau, autocorrelation time, etc.
 
 
 ##############################
