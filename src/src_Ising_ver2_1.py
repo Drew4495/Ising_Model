@@ -523,6 +523,7 @@ class Ising_Model:
                           optimization_method = "gradient",
                           max_iter = 50000,
                           learning_rate = 0.1,
+                          objective_function_kwargs = None,
                           convergence_threshold = None,
                           log_settings_dict = None,
                           log_settings_objective_function_dict = None,
@@ -586,6 +587,10 @@ class Ising_Model:
             var_name: [] for var_name in log_settings_dict
         }
 
+        # Instantiate objective_function_kwargs
+        if objective_function_kwargs is None:
+            objective_function_kwargs = {}
+
         # Choose and run Objective Function and Optimization Method
         # -------------------------------------------------------------
         start_time_obj_fxn = time.time()
@@ -598,7 +603,8 @@ class Ising_Model:
             max_iter = max_iter,
             learning_rate = learning_rate,
             convergence_threshold = convergence_threshold,
-            log_settings_dict = log_settings_objective_function_dict
+            log_settings_dict = log_settings_objective_function_dict,
+            **objective_function_kwargs
         )
         if "time" in log_settings_dict:
             elapsed_time_obj_fxn = self._get_elapsed_time(start_time_obj_fxn)
@@ -628,8 +634,8 @@ class Ising_Model:
                                                 lambda_colname = "lambda",
                                                 learning_rate=0.1,
                                                 convergence_threshold=None,
-                                                log_settings_dict = None
-                                                ):
+                                                log_settings_dict = None,
+                                                **objective_function_kwargs):
         """
         Based on the chosen objective_function and optimization_method,
         calls the appropriate sub-routine.
@@ -689,7 +695,8 @@ class Ising_Model:
                 max_iter = max_iter,
                 lr = learning_rate,
                 convergence_threshold = convergence_threshold,
-                log_settings_dict = log_settings_dict
+                log_settings_dict = log_settings_dict,
+                **objective_function_kwargs
             )
             return objective_function_output_dict
 
@@ -944,7 +951,8 @@ class Ising_Model:
                                             max_iter,
                                             lr,
                                             convergence_threshold=None,
-                                            log_settings_dict=None
+                                            log_settings_dict=None,
+                                            **objective_function_kwargs
                                             ):
         """
         Performs gradient ascent on the log pseudolikelihood for an Ising model
@@ -1001,6 +1009,9 @@ class Ising_Model:
             var_name: [] for var_name in log_settings_dict
         }
 
+        ## Instantiate objective_function_kwargs if not specified
+        verbose = objective_function_kwargs.get("verbose", False)
+
         # Gradient Loop
         # -------------------------------------------------------------
         num_units, num_timepoints = ts.shape
@@ -1051,6 +1062,10 @@ class Ising_Model:
                 J_diff = np.linalg.norm(J - J_prev)
                 if h_diff < convergence_threshold and J_diff < convergence_threshold:
                     break
+
+            # --- Subsection: Print verbose output if needed ---
+            if verbose and (iter_num % verbose) == 0:
+                print(f"Objective Fxn: Iteration {iter_num}: h_diff = {h_diff:.4f}, J_diff = {J_diff:.4f}")
 
         # Return final results
         return_dict = {
@@ -1469,14 +1484,18 @@ class Ising_Model:
         return beta**2 / num_units * (energies.var())
 
 
-    def _calc_magnetization(self, units_array):
+    def _calc_magnetization(self, units_array, per_spin=True):
         """
         Calculate the magnetization of the system using the units array.
         :param units_array: array of shape (N,) representing the current state of the units.
         :return: Returns the magnetization of the system. Scalar value.
         """
-        magnetization = np.mean(units_array)
-        return magnetization
+        if per_spin:
+            magnetization = np.mean(units_array)
+            return magnetization
+        elif not per_spin:
+            magnetization = np.sum(units_array)
+            return magnetization
 
 
     def _calc_magnetic_suscpetibility(self, magnetization_array, beta, num_units, use_absolute_value = True):

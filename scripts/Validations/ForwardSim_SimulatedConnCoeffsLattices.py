@@ -127,7 +127,7 @@ J = np.load("data/simulated_data/ConnectivityMatrices_J/Constant_Weights/J_Const
 
 ### Define parameters for forward simulation
 num_units = J.shape[0]
-num_sim_steps = 100000
+num_sim_steps = 1000
 h_zeros = np.zeros((num_units,))
 sim_measurements_dict = {
     "energy": 1,
